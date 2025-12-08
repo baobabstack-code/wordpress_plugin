@@ -1,56 +1,71 @@
 <?php
 /**
  * Plugin Name: Gravity Forms Webhook Integration
- * Description: Sends Gravity Forms submissions to a configurable webhook (e.g., Webhook.site) using gform_after_submission.
- * Version: 1.1.0
+ * Description: Sends Gravity Forms submissions to a webhook using gform_after_submission.
+ * Version: 2.0.0
  * Author: Nyasha Ushewokunze
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
-	exit; // Exit if accessed directly.
+	exit; // Stop direct access for security
 }
 
 /**
- * Returns the default webhook URL. Override via the gfwi_webhook_url filter.
- *
- * @return string
+ * The default webhook URL.
+ * You can override this using the filter gfwi_webhook_url.
  */
-function gfwi_webhook_url_default() {
+function gfwi_default_webhook_url() {
 	return 'https://webhook.site/351579d8-5ee7-486f-9139-1342b3b4147e';
 }
 
 /**
- * Register runtime hooks only after Gravity Forms is available.
+ * Initialize the plugin, but ONLY if Gravity Forms is active.
  */
-function gfwi_init() {
+function gfwi_init_plugin() {
+
+	// Check if Gravity Forms plugin exists.
 	if ( ! class_exists( 'GFForms' ) ) {
 		add_action( 'admin_notices', 'gfwi_missing_gf_notice' );
 		return;
 	}
 
-	add_action( 'gform_after_submission_1, 'gfwi_send_to_webhook', 10, 2 );
+	/**
+	 * OPTION 1 — Trigger webhook ONLY when Form ID 1 is submitted.
+	 * Example:
+	 * add_action( 'gform_after_submission_1', 'gfwi_send_to_webhook', 10, 2 );
+	 */
+
+	/**
+	 * OPTION 2 — Trigger webhook for ALL forms.
+	 * This line says:
+	 * Hook into gform_after_submission
+	 * Run gfwi_send_to_webhook()
+	 * Priority = 10 (normal timing)
+	 * Number of arguments = 2 ($entry, $form)
+	 */
+	add_action( 'gform_after_submission', 'gfwi_send_to_webhook', 10, 2 );
 }
-add_action( 'plugins_loaded', 'gfwi_init' );
+add_action( 'plugins_loaded', 'gfwi_init_plugin' );
 
 /**
- * Admin notice shown when Gravity Forms is missing.
+ * Show an admin warning if Gravity Forms is not installed.
  */
 function gfwi_missing_gf_notice() {
-	if ( ! current_user_can( 'activate_plugins' ) ) {
-		return;
-	}
-
 	echo '<div class="notice notice-error"><p><strong>Gravity Forms Webhook Integration</strong> requires Gravity Forms to be installed and active.</p></div>';
 }
 
 /**
- * Sends Gravity Forms entry data to an external webhook URL.
+ * This is the main function that sends form data to your webhook.
  *
- * @param array $entry The form entry data.
- * @param array $form  The form object.
+ * @param array $entry  The submitted form values.
+ * @param array $form   The full form structure.
  */
 function gfwi_send_to_webhook( $entry, $form ) {
-	$webhook_url = apply_filters( 'gfwi_webhook_url', gfwi_webhook_url_default(), $entry, $form );
+
+	/**
+	 * Allows overriding the webhook URL with a filter if needed.
+	 */
+	$webhook_url = apply_filters( 'gfwi_webhook_url', gfwi_default_webhook_url(), $entry, $form );
 
 	if ( empty( $webhook_url ) ) {
 		return;
@@ -58,62 +73,43 @@ function gfwi_send_to_webhook( $entry, $form ) {
 
 	$data = array();
 
-	if ( isset( $form['fields'] ) && is_array( $form['fields'] ) ) {
+	/**
+	 * Build the data array:
+	 * Loop through each field in the form,
+	 * read the label and the submitted value,
+	 * and store them as: "Label" => "Value"
+	 */
+	if ( ! empty( $form['fields'] ) ) {
 		foreach ( $form['fields'] as $field ) {
-			if ( ! is_object( $field ) || ! isset( $field->id ) ) {
-				continue;
-			}
 
-			$field_id = (string) $field->id;
+			// Field ID number (e.g., 1, 2, 3)
+			$field_id = $field->id;
 
-			if ( ! empty( $field->label ) ) {
-				$label = $field->label;
-			} elseif ( ! empty( $field->adminLabel ) ) {
-				$label = $field->adminLabel;
-			} else {
-				$label = 'field_' . $field_id;
-			}
+			// Choose the best possible label for the field
+			$label = $field->label ?: $field->adminLabel ?: 'field_' . $field_id;
 
-			if ( function_exists( 'rgar' ) ) {
-				$value = rgar( $entry, $field_id );
-			} else {
-				$value = isset( $entry[ $field_id ] ) ? $entry[ $field_id ] : '';
-			}
+			// Get the submitted value for this field ID
+			$value = rgar( $entry, $field_id );
 
+			// Save into our data array
 			$data[ $label ] = $value;
 		}
 	}
 
-	$response = wp_remote_post(
-		$webhook_url,
-		array(
-			'method'  => 'POST',
-			'headers' => array( 'Content-Type' => 'application/json' ),
-			'body'    => wp_json_encode( $data ),
-			'timeout' => 20,
-		)
-	);
+	/**
+	 * Send the data to the webhook in JSON format.
+	 */
+	$response = wp_remote_post( $webhook_url, array(
+		'method'  => 'POST',
+		'headers' => array( 'Content-Type' => 'application/json' ),
+		'body'    => wp_json_encode( $data ),
+		'timeout' => 20,
+	));
 
+	/**
+	 * Log an error message if something goes wrong.
+	 */
 	if ( is_wp_error( $response ) ) {
 		error_log( 'GF Webhook Error: ' . $response->get_error_message() );
 	}
 }
-
-
-
-// function post_to_third_party( $entry, $form ) {
- 
-//     $endpoint_url = 'https://webhook.site/351579d8-5ee7-486f-9139-1342b3b4147e';
-//     $body = array(
-//         'first_name' => rgar( $entry, '1.3' ),
-//         'last_name' => rgar( $entry, '1.6' ),
-//         'message' => rgar( $entry, '3' ),
-//         );
-//     GFCommon::log_debug( 'gform_after_submissionz_5: body => ' . print_r( $body, true ) );
- 
-//     $response = wp_remote_post( $endpoint_url, array( 'body' => $body ) );
-//     GFCommon::log_debug( 'gform_after_submission: response => ' . print_r( $response, true ) );
-// }
-
-add_action( 'gform_after_submission', 'post_to_third_party', 10, 2 );
-
